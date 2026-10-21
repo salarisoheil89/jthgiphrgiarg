@@ -520,7 +520,7 @@ def handle_messages(message):
         bot.send_message(
             uid,
             "حالا نام کاربری تلگرام خودت را وارد کن.\n"
-            "مثال: @soheil_316"
+            "مثال: @Your_ID"
         )
 
     # ثبت نام کاربری
