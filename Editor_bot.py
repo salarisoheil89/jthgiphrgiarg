@@ -69,6 +69,25 @@ def get_user(tg_id):
         ).fetchone()
 
 
+def save_user_from_telegram(user):
+    """ثبت خودکار کاربر با اطلاعاتی که تلگرام در اختیار ربات می‌گذارد."""
+    full_name = user.first_name or "کاربر"
+    username = user.username or ""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("""
+            INSERT INTO users (tg_id, full_name, username, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(tg_id) DO UPDATE SET
+                full_name = excluded.full_name,
+                username = excluded.username
+        """, (
+            user.id,
+            full_name,
+            username,
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ))
+
+
 def get_order(order_id):
     with sqlite3.connect(DB_NAME) as conn:
         return conn.execute(
@@ -121,6 +140,7 @@ def services_menu():
         ("🎬 ادیت ویدئو", "video"),
         ("🖼 ادیت عکس", "photo"),
         ("🎨 طراحی لوگو", "logo"),
+        ("🪄 ساخت تصویر با پرامپت", "prompt_image"),
         ("🔙 بازگشت", "home"),
     ])
 
@@ -150,30 +170,26 @@ def order_menu():
 def start(message):
     uid = message.from_user.id
 
+    # ذخیره خودکار شناسه عددی و اطلاعات عمومی حساب تلگرام
+    save_user_from_telegram(message.from_user)
+    states.pop(uid, None)
+
     if is_admin(uid):
         bot.send_message(
             uid,
-            "سلام مدیر عزیز! 👋\nبه پنل مدیریت ربات خوش آمدی.",
+            "سلام مدیر عزیز! 👋\\nبه پنل مدیریت ربات خوش آمدی.",
             reply_markup=admin_menu()
         )
         return
 
     user = get_user(uid)
-
-    if user:
-        bot.send_message(
-            uid,
-            f"سلام {user[1]} عزیز! 👋\nبه ربات خدمات ادیت خوش آمدی.",
-            reply_markup=main_menu(uid)
-        )
-        return
-
-    states[uid] = {"step": "name"}
-
+    display_name = user[1] if user else (message.from_user.first_name or "دوست من")
     bot.send_message(
         uid,
-        "سلام! 👋 به ربات خدمات ادیت خوش آمدی.\n\n"
-        "برای شروع، لطفاً نام و نام خانوادگی خودت را وارد کن."
+        f"سلام {display_name} عزیز! 👋\\n"
+        "به ربات خدمات ادیت خوش آمدی.\\n"
+        "حساب کاربری‌ات به‌صورت خودکار ثبت شد.",
+        reply_markup=main_menu(uid)
     )
 
 
@@ -209,6 +225,21 @@ def callbacks(call):
         )
 
     # شروع سفارش
+    elif data == "prompt_image":
+        states[uid] = {
+            "step": "prompt_text",
+            "order_type": "ساخت تصویر با پرامپت",
+            "sample_text": "",
+            "sample_msg_id": None,
+            "item_msg_ids": [],
+        }
+        bot.send_message(
+            uid,
+            "🪄 ساخت تصویر با پرامپت\\n\\n"
+            "مرحله ۱ از ۲: لطفاً پرامپت یا توضیح دقیق تصویری را "
+            "که می‌خواهی ساخته شود، به‌صورت متن ارسال کن."
+        )
+
     elif data in ("video", "photo", "logo"):
         order_types = {
             "video": "ادیت ویدئو",
@@ -572,6 +603,41 @@ def handle_messages(message):
             uid,
             "✅ ثبت‌نام شما با موفقیت انجام شد!",
             reply_markup=main_menu(uid)
+        )
+
+    # دریافت پرامپت برای ساخت تصویر
+    elif step == "prompt_text":
+        if message.content_type != "text" or not message.text.strip():
+            bot.send_message(uid, "لطفاً پرامپت را به‌صورت متن ارسال کن.")
+            return
+
+        state["sample_text"] = message.text.strip()
+        state["step"] = "prompt_image"
+        bot.send_message(
+            uid,
+            "✅ پرامپت دریافت شد.\\n\\n"
+            "مرحله ۲ از ۲: حالا عکسی را که می‌خواهی بر اساس این پرامپت "
+            "روی آن کار شود، به‌صورت عکس ارسال کن."
+        )
+
+    # دریافت عکس مربوط به پرامپت
+    elif step == "prompt_image":
+        if message.content_type != "photo":
+            bot.send_message(
+                uid,
+                "لطفاً تصویر موردنظرت را با گزینه ارسال عکس بفرست؛ "
+                "بعد از دریافت عکس می‌توانی سفارش را ثبت کنی."
+            )
+            return
+
+        state["item_msg_ids"].append(message.message_id)
+        state["step"] = "items"
+        bot.send_message(
+            uid,
+            "✅ پرامپت و عکس دریافت شدند.\\n\\n"
+            "اگر فایل دیگری هم باید همراه سفارش باشد، ارسال کن؛ "
+            "در غیر این صورت روی «ثبت درخواست» بزن.",
+            reply_markup=order_menu()
         )
 
     # دریافت نمونه ادیت
