@@ -535,6 +535,25 @@ def handle_messages(message):
             bot.send_message(uid, "نام کاربری معتبر وارد کن.")
             return
 
+        real_username = message.from_user.username
+
+        if not real_username:
+            bot.send_message(
+                uid,
+                "❌ تو در حال حاضر نام کاربری (Username) در تلگرام نداری.\n"
+                "لطفاً ابتدا از تنظیمات تلگرام یک نام کاربری برای خودت تنظیم کن، "
+                "سپس دوباره آن را اینجا ارسال کن."
+            )
+            return
+
+        if username.lower() != real_username.lower():
+            bot.send_message(
+                uid,
+                "❌ نام کاربری وارد شده با نام کاربری تلگرام خودت مطابقت ندارد.\n"
+                "لطفاً نام کاربری تلگرام خود را وارد کنید."
+            )
+            return
+
         with sqlite3.connect(DB_NAME) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO users
