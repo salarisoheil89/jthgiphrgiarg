@@ -9,7 +9,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # تنظیمات ربات
 # ==================================================
 
-TOKEN = "8829613268:AAHHZW-VZJEyzewwiMKad5yacq1hbOHG2vY"
+TOKEN = "8829613268:AAFhxk2PsJZfsBNwVBfARswqnhFXHrxI29o"
 ADMIN_ID = 1405044119  # شناسه عددی تلگرام خودت
 ADMIN_USERNAME = "soheil_316"  # نام کاربری پشتیبانی، بدون @
 
