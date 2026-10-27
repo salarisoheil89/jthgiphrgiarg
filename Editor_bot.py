@@ -177,7 +177,7 @@ def start(message):
     if is_admin(uid):
         bot.send_message(
             uid,
-            "سلام مدیر عزیز! 👋\\nبه پنل مدیریت ربات خوش آمدی.",
+            "سلام مدیر عزیز! 👋به پنل مدیریت ربات خوش آمدی.",
             reply_markup=admin_menu()
         )
         return
