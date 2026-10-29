@@ -1,18 +1,9 @@
 import sqlite3
 import json
-import time
-import base64
-from io import BytesIO
 from datetime import datetime
 
-import requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None  # اگر نصب نشده: pip install openai
 
 # ==================================================
 # تنظیمات ربات
@@ -24,29 +15,6 @@ ADMIN_USERNAME = "soheil_316"  # نام کاربری پشتیبانی، بدون
 
 bot = telebot.TeleBot(TOKEN)
 DB_NAME = "bot_data.db"
-
-# ==================================================
-# تنظیمات هوش مصنوعی
-# ==================================================
-# کلید OpenAI رو از اینجا بگیر: https://platform.openai.com/api-keys
-# (باید حساب بسازی و برای استفاده از API شارژ/کارت بانکی بین‌المللی وصل کنی)
-# برای: تغییر لحن متن، ادیت عکس، طراحی لوگو، ساخت تصویر با پرامپت
-OPENAI_API_KEY = "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"
-
-# کلید Replicate رو از اینجا بگیر: https://replicate.com/account/api-tokens
-# (ثبت‌نام رایگانه، فقط برای استفاده باید شارژ کنی)
-# فقط برای: سرویس «کیفیت عکس (4K)» استفاده می‌شود
-REPLICATE_API_TOKEN = "r8_QD425GWPxMosjTEMVSDYHqqwj4A5oBs0oK3fg"
-
-# نسخه مدل آپ‌اسکیل روی Replicate (در صورت خطا، نسخه جدید رو از
-# https://replicate.com/nightmareai/real-esrgan/api بردار و جایگزین کن)
-REPLICATE_UPSCALE_MODEL = (
-    "nightmareai/real-esrgan:"
-    "42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b"
-)
-
-# انواع سفارشی که بعد از ثبت، به‌صورت خودکار با هوش مصنوعی پردازش و تحویل می‌شوند
-AI_AUTOMATED_ORDER_TYPES = {"ادیت عکس", "طراحی لوگو", "ساخت تصویر با پرامپت"}
 
 # وضعیت موقت مراحل ثبت‌نام و سفارش
 states = {}
@@ -133,250 +101,6 @@ def is_admin(tg_id):
 
 
 # ==================================================
-# هوش مصنوعی (OpenAI + Replicate)
-# ==================================================
-
-def openai_client():
-    if not OpenAI:
-        raise RuntimeError("کتابخانه openai نصب نیست. دستور: pip install openai")
-    if not OPENAI_API_KEY or "PASTE_YOUR" in OPENAI_API_KEY:
-        raise RuntimeError("کلید OPENAI_API_KEY تنظیم نشده است.")
-    return OpenAI(api_key=OPENAI_API_KEY)
-
-
-def download_telegram_file(file_id):
-    """دانلود فایل ارسالی کاربر در تلگرام و برگرداندن بایت‌های آن."""
-    file_info = bot.get_file(file_id)
-    return bot.download_file(file_info.file_path)
-
-
-def extract_file_id(message):
-    """گرفتن file_id قابل‌دانلود از یک پیام (فقط عکس/فایل عکسی)."""
-    if message.content_type == "photo":
-        return message.photo[-1].file_id
-    if message.content_type == "document":
-        mime = (message.document.mime_type or "")
-        if mime.startswith("image/"):
-            return message.document.file_id
-    return None
-
-
-def ai_generate_image(prompt, size="1024x1024"):
-    """ساخت عکس جدید از روی توضیح متنی (برای لوگو و ساخت تصویر بدون عکس پایه)."""
-    client = openai_client()
-    result = client.images.generate(
-        model="gpt-image-1",
-        prompt=prompt,
-        size=size,
-    )
-    return base64.b64decode(result.data[0].b64_json)
-
-
-def ai_edit_image(image_bytes, prompt, size="1024x1024"):
-    """ادیت یک عکس موجود بر اساس یک دستور متنی."""
-    client = openai_client()
-    result = client.images.edit(
-        model="gpt-image-1",
-        image=("image.png", BytesIO(image_bytes), "image/png"),
-        prompt=prompt,
-        size=size,
-    )
-    return base64.b64decode(result.data[0].b64_json)
-
-
-def ai_upscale_image(image_bytes):
-    """آپ‌اسکیل عکس به کیفیت بالا (تا ۴ برابر) با Replicate (Real-ESRGAN)."""
-    if not REPLICATE_API_TOKEN or "PASTE_YOUR" in REPLICATE_API_TOKEN:
-        raise RuntimeError("کلید REPLICATE_API_TOKEN تنظیم نشده است.")
-
-    data_uri = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
-
-    headers = {
-        "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    model_name, version = REPLICATE_UPSCALE_MODEL.split(":", 1)
-
-    create_resp = requests.post(
-        "https://api.replicate.com/v1/predictions",
-        headers=headers,
-        json={
-            "version": version,
-            "input": {"image": data_uri, "scale": 4, "face_enhance": False},
-        },
-        timeout=60,
-    )
-    create_resp.raise_for_status()
-    status_url = create_resp.json()["urls"]["get"]
-
-    for _ in range(40):
-        time.sleep(3)
-        poll = requests.get(status_url, headers=headers, timeout=30).json()
-        status = poll.get("status")
-
-        if status == "succeeded":
-            output_url = poll["output"]
-            img_resp = requests.get(output_url, timeout=60)
-            img_resp.raise_for_status()
-            return img_resp.content
-
-        if status == "failed":
-            raise RuntimeError("پردازش آپ‌اسکیل تصویر با خطا مواجه شد.")
-
-    raise RuntimeError("زمان پردازش تصویر بیش از حد معمول طول کشید.")
-
-
-def ai_rewrite_text(text, tone_label, entity_map):
-    """بازنویسی متن با لحن دلخواه و جایگزینی اسامی مشخص‌شده توسط کاربر."""
-    client = openai_client()
-
-    if entity_map:
-        entity_lines = "\n".join(
-            f"- «{old}» را به «{new}» تبدیل کن" for old, new in entity_map.items()
-        )
-    else:
-        entity_lines = "(کاربر اسم خاصی برای جایگزینی مشخص نکرده است)"
-
-    system_prompt = (
-        "تو یک ویراستار حرفه‌ای متن فارسی هستی. وظیفه تو بازنویسی متن ورودی کاربر "
-        f"با همان معنا و محتوا، اما با لحن «{tone_label}» است. "
-        "اگر در دستور زیر برای برخی اسم‌های افراد، سازمان‌ها یا شرکت‌ها جایگزین "
-        "مشخص شده، دقیقاً همان جایگزینی را در متن نهایی اعمال کن. سایر بخش‌های "
-        "متن را دست‌نخورده و با همان معنا نگه دار. فقط و فقط متن نهایی "
-        "بازنویسی‌شده را برگردان، بدون هیچ توضیح یا مقدمه اضافه."
-    )
-    user_prompt = (
-        f"متن اصلی:\n{text}\n\n"
-        f"دستور جایگزینی اسامی:\n{entity_lines}"
-    )
-
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.7,
-    )
-    return resp.choices[0].message.content.strip()
-
-
-def parse_entity_map(text):
-    """تبدیل متن ورودی کاربر (هر خط: اسم قدیمی = اسم جدید) به دیکشنری."""
-    text = (text or "").strip()
-    if not text or text in ("ندارم", "خیر", "نه", "-", "هیچی"):
-        return {}
-
-    entity_map = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if "=" in line:
-            old, new = line.split("=", 1)
-        elif ":" in line:
-            old, new = line.split(":", 1)
-        else:
-            continue
-        old, new = old.strip(), new.strip()
-        if old and new:
-            entity_map[old] = new
-
-    return entity_map
-
-
-def process_and_deliver_ai_order(order_id, uid, state):
-    """پردازش خودکار سفارش (عکس/لوگو/پرامپت) با هوش مصنوعی و ارسال نتیجه به کاربر."""
-    order_type = state.get("order_type")
-
-    bot.send_message(
-        uid,
-        "⏳ سفارش شما در حال پردازش با هوش مصنوعی است... چند لحظه صبر کن."
-    )
-
-    try:
-        if order_type == "ادیت عکس":
-            results = ai_process_photo_edit_order(state)
-        elif order_type == "طراحی لوگو":
-            results = ai_process_logo_order(state)
-        elif order_type == "ساخت تصویر با پرامپت":
-            results = ai_process_prompt_image_order(state)
-        else:
-            results = []
-
-        if not results:
-            raise RuntimeError("خروجی معتبری از هوش مصنوعی دریافت نشد.")
-
-        for img_bytes in results:
-            bot.send_photo(
-                uid,
-                BytesIO(img_bytes),
-                caption="✅ نتیجه سفارش شما (ساخته‌شده با هوش مصنوعی)."
-            )
-
-        with sqlite3.connect(DB_NAME) as conn:
-            conn.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                ("تحویل‌شده (هوش مصنوعی)", order_id)
-            )
-
-        notify_admin_order(order_id, ai_status="done")
-
-    except Exception as e:
-        print("خطای پردازش سفارش با هوش مصنوعی:", e)
-        bot.send_message(
-            uid,
-            "⚠️ پردازش خودکار سفارش شما با مشکل مواجه شد. سفارشت برای "
-            "بررسی و انجام دستی برای پشتیبانی ارسال شد."
-        )
-        notify_admin_order(order_id, ai_status="failed")
-
-
-def ai_process_photo_edit_order(state):
-    prompt = state.get("sample_text") or "این عکس را به‌صورت حرفه‌ای و زیبا ادیت کن."
-    outputs = []
-
-    for item in state.get("item_msg_ids", []):
-        file_id = item.get("file_id") if isinstance(item, dict) else None
-        if not file_id:
-            continue
-        image_bytes = download_telegram_file(file_id)
-        outputs.append(ai_edit_image(image_bytes, prompt))
-
-    if not outputs:
-        raise RuntimeError("هیچ عکس قابل‌پردازشی در سفارش پیدا نشد.")
-
-    return outputs
-
-
-def ai_process_logo_order(state):
-    description = state.get("sample_text") or "یک لوگوی مدرن، مینیمال و حرفه‌ای"
-    prompt = (
-        "یک لوگوی حرفه‌ای، تمیز و باکیفیت بر اساس این توضیحات طراحی کن "
-        f"(بدون متن اضافه روی تصویر مگر اینکه خواسته شده باشد): {description}"
-    )
-    return [ai_generate_image(prompt, size="1024x1024")]
-
-
-def ai_process_prompt_image_order(state):
-    prompt = state.get("sample_text") or "این تصویر را به شکلی خلاقانه تغییر بده."
-    file_id = None
-
-    for item in state.get("item_msg_ids", []):
-        if isinstance(item, dict) and item.get("file_id"):
-            file_id = item["file_id"]
-            break
-
-    if file_id:
-        image_bytes = download_telegram_file(file_id)
-        result = ai_edit_image(image_bytes, prompt)
-    else:
-        result = ai_generate_image(prompt)
-
-    return [result]
-
-
-# ==================================================
 # منوها
 # ==================================================
 
@@ -414,27 +138,11 @@ def admin_menu():
 def services_menu():
     return make_menu([
         ("🎬 ادیت ویدئو", "video"),
-        ("🖼 ادیت عکس (با هوش مصنوعی)", "photo"),
-        ("🎨 طراحی لوگو (با هوش مصنوعی)", "logo"),
+        ("🖼 ادیت عکس", "photo"),
+        ("🎨 طراحی لوگو", "logo"),
         ("🪄 ساخت تصویر با پرامپت", "prompt_image"),
-        ("📸 کیفیت عکس (4K)", "quality"),
-        ("📝 تغییر لحن متن", "text_style"),
         ("🔙 بازگشت", "home"),
     ])
-
-
-TONE_OPTIONS = {
-    "tone_office": "اداری",
-    "tone_formal": "رسمی",
-    "tone_casual": "خودمونی",
-    "tone_friendly": "دوستانه",
-    "tone_news": "خبری",
-    "tone_sad": "غمگین",
-}
-
-
-def tone_menu():
-    return make_menu([(label, key) for key, label in TONE_OPTIONS.items()])
 
 
 def support_menu():
@@ -532,42 +240,6 @@ def callbacks(call):
             "که می‌خواهی ساخته شود، به‌صورت متن ارسال کن."
         )
 
-    # کیفیت عکس (آپ‌اسکیل ۴K با هوش مصنوعی)
-    elif data == "quality":
-        states[uid] = {"step": "quality_photo"}
-        bot.send_message(
-            uid,
-            "📸 کیفیت عکس (4K)\n\n"
-            "عکسی که می‌خواهی کیفیتش با هوش مصنوعی بهبود پیدا کند را ارسال کن."
-        )
-
-    # تغییر لحن متن
-    elif data == "text_style":
-        states[uid] = {"step": "text_style_input"}
-        bot.send_message(
-            uid,
-            "📝 تغییر لحن متن\n\n"
-            "متنی که می‌خواهی لحنش تغییر کند را ارسال کن."
-        )
-
-    # انتخاب لحن جدید متن
-    elif data in TONE_OPTIONS:
-        state = states.get(uid)
-        if not state or state.get("step") != "text_style_tone":
-            return
-
-        state["tone"] = TONE_OPTIONS[data]
-        state["step"] = "text_style_names"
-
-        bot.send_message(
-            uid,
-            f"✅ لحن انتخابی: {state['tone']}\n\n"
-            "اگر در متن اسم شخص، سازمان یا شرکت خاصی هست که باید با اسم "
-            "دیگری جایگزین شود، به این شکل بفرست (هر مورد در یک خط):\n\n"
-            "اسم قدیمی = اسم جدید\n\n"
-            "اگر نیازی به جایگزینی نیست، فقط بنویس «ندارم»."
-        )
-
     elif data in ("video", "photo", "logo"):
         order_types = {
             "video": "ادیت ویدئو",
@@ -647,31 +319,21 @@ def callbacks(call):
 
             order_id = cursor.lastrowid
 
+        # اطلاع به مدیر
+        notify_admin_order(order_id)
+
         states.pop(uid, None)
 
-        if state["order_type"] in AI_AUTOMATED_ORDER_TYPES:
-            bot.send_message(
-                uid,
-                f"✅ درخواست شما با موفقیت ثبت شد.\n"
-                f"🧾 کد سفارش: {order_id}\n\n"
-                "سفارش تو الان با هوش مصنوعی پردازش می‌شود.",
-                reply_markup=main_menu(uid)
-            )
-            process_and_deliver_ai_order(order_id, uid, state)
-        else:
-            # اطلاع به مدیر (فقط برای ادیت ویدئو که دستی انجام می‌شود)
-            notify_admin_order(order_id)
-
-            bot.send_message(
-                uid,
-                f"✅ درخواست شما با موفقیت ثبت شد."
-                f"🧾 کد سفارش: {order_id}\n"
-                "⏳ شما در صف انتظار هستید. لطفاً برای انجام پروژه "
-                "خود صبر کنید."
-                "📤 ادیت نهایی شما پس از آماده شدن، از طریق همین "
-                "ربات برایتان ارسال خواهد شد.",
-                reply_markup=main_menu(uid)
-            )
+        bot.send_message(
+            uid,
+            f"✅ درخواست شما با موفقیت ثبت شد."
+            f"🧾 کد سفارش: {order_id}\n"
+            "⏳ شما در صف انتظار هستید. لطفاً برای انجام پروژه "
+            "خود صبر کنید."
+            "📤 ادیت نهایی شما پس از آماده شدن، از طریق همین "
+            "ربات برایتان ارسال خواهد شد.",
+            reply_markup=main_menu(uid)
+        )
 
     elif data == "cancel_order":
         states.pop(uid, None)
@@ -811,32 +473,19 @@ def callbacks(call):
 # اطلاع‌رسانی سفارش به مدیر
 # ==================================================
 
-def notify_admin_order(order_id, ai_status=None):
-    """
-    ai_status:
-      None   -> سفارش دستی (مثل ادیت ویدئو)، دکمه «ارسال ادیت نهایی» نشان داده می‌شود
-      "done" -> هوش مصنوعی خودش پردازش و برای کاربر ارسال کرد (فقط اطلاع‌رسانی)
-      "failed" -> پردازش خودکار شکست خورد و باید دستی انجام شود
-    """
+def notify_admin_order(order_id):
     order = get_order(order_id)
 
     if not order:
         return
 
-    status_note = {
-        "done": "🤖 این سفارش به‌صورت خودکار با هوش مصنوعی پردازش و برای کاربر ارسال شد.",
-        "failed": "⚠️ پردازش خودکار این سفارش شکست خورد؛ لطفاً خودت دستی انجامش بده.",
-    }.get(ai_status, "")
-
-    markup = None
-    if ai_status != "done":
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton(
-                "📤 ارسال ادیت نهایی",
-                callback_data="admin_send"
-            )
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton(
+            "📤 ارسال ادیت نهایی",
+            callback_data="admin_send"
         )
+    )
 
     bot.send_message(
         ADMIN_ID,
@@ -847,8 +496,7 @@ def notify_admin_order(order_id, ai_status=None):
         f"🆔 شناسه: {order[1]}\n"
         f"🛠 نوع: {order[4]}\n"
         f"📝 توضیحات نمونه: {order[5]}\n"
-        f"📌 وضعیت: {order[8]}"
-        + (f"\n\n{status_note}" if status_note else ""),
+        f"📌 وضعیت: {order[8]}",
         reply_markup=markup
     )
 
@@ -864,8 +512,7 @@ def notify_admin_order(order_id, ai_status=None):
     try:
         item_ids = json.loads(order[7] or "[]")
 
-        for item in item_ids:
-            msg_id = item["msg_id"] if isinstance(item, dict) else item
+        for msg_id in item_ids:
             bot.copy_message(
                 ADMIN_ID, order[1], msg_id
             )
@@ -983,10 +630,7 @@ def handle_messages(message):
             )
             return
 
-        state["item_msg_ids"].append({
-            "msg_id": message.message_id,
-            "file_id": extract_file_id(message),
-        })
+        state["item_msg_ids"].append(message.message_id)
         state["step"] = "items"
         bot.send_message(
             uid,
@@ -1006,7 +650,6 @@ def handle_messages(message):
             )
 
         state["sample_msg_id"] = message.message_id
-        state["sample_file_id"] = extract_file_id(message)
 
         if state["order_type"] == "طراحی لوگو":
             state["step"] = "items"
@@ -1030,10 +673,7 @@ def handle_messages(message):
 
     # دریافت فایل‌های سفارش
     elif step == "items":
-        state["item_msg_ids"].append({
-            "msg_id": message.message_id,
-            "file_id": extract_file_id(message),
-        })
+        state["item_msg_ids"].append(message.message_id)
 
         bot.send_message(
             uid,
@@ -1042,81 +682,6 @@ def handle_messages(message):
             "ثبت درخواست را بزن.",
             reply_markup=order_menu()
         )
-
-    # دریافت عکس برای بهبود کیفیت (4K)
-    elif step == "quality_photo":
-        file_id = extract_file_id(message)
-
-        if not file_id:
-            bot.send_message(
-                uid,
-                "لطفاً عکس موردنظرت را با گزینه ارسال عکس بفرست."
-            )
-            return
-
-        bot.send_message(uid, "⏳ در حال بهبود کیفیت عکس با هوش مصنوعی...")
-        states.pop(uid, None)
-
-        try:
-            image_bytes = download_telegram_file(file_id)
-            result_bytes = ai_upscale_image(image_bytes)
-
-            bot.send_document(
-                uid,
-                (f"quality_{message.message_id}.png", BytesIO(result_bytes)),
-                caption="✅ عکس با کیفیت بهبودیافته (برای حفظ کیفیت، به‌صورت فایل ارسال شد)."
-            )
-        except Exception as e:
-            print("خطای بهبود کیفیت عکس:", e)
-            bot.send_message(
-                uid,
-                "⚠️ متاسفانه بهبود کیفیت این عکس با مشکل مواجه شد. "
-                "لطفاً بعداً دوباره امتحان کن یا با پشتیبانی در ارتباط باش."
-            )
-
-        bot.send_message(uid, "🏠 منوی اصلی:", reply_markup=main_menu(uid))
-
-    # دریافت متن برای تغییر لحن
-    elif step == "text_style_input":
-        if message.content_type != "text" or not message.text.strip():
-            bot.send_message(uid, "لطفاً متن موردنظرت را به‌صورت نوشته ارسال کن.")
-            return
-
-        state["original_text"] = message.text.strip()
-        state["step"] = "text_style_tone"
-
-        bot.send_message(
-            uid,
-            "✅ متن دریافت شد.\n\n"
-            "حالا لحن موردنظرت را انتخاب کن:",
-            reply_markup=tone_menu()
-        )
-
-    # دریافت اسامی جایگزین و اجرای بازنویسی نهایی
-    elif step == "text_style_names":
-        if message.content_type != "text":
-            bot.send_message(uid, "لطفاً پاسخ را به‌صورت متن ارسال کن.")
-            return
-
-        entity_map = parse_entity_map(message.text)
-        bot.send_message(uid, "⏳ در حال بازنویسی متن با هوش مصنوعی...")
-
-        original_text = state.get("original_text", "")
-        tone_label = state.get("tone", "")
-        states.pop(uid, None)
-
-        try:
-            new_text = ai_rewrite_text(original_text, tone_label, entity_map)
-            bot.send_message(uid, f"✅ متن بازنویسی‌شده:\n\n{new_text}")
-        except Exception as e:
-            print("خطای تغییر لحن متن:", e)
-            bot.send_message(
-                uid,
-                "⚠️ متاسفانه بازنویسی متن با مشکل مواجه شد. "
-                "لطفاً بعداً دوباره امتحان کن یا با پشتیبانی در ارتباط باش."
-            )
-
-        bot.send_message(uid, "🏠 منوی اصلی:", reply_markup=main_menu(uid))
 
     # دریافت نظر کاربر
     elif step == "comment":
